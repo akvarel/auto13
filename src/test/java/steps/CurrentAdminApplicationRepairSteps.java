@@ -11,7 +11,7 @@ import static com.codeborne.selenide.WebDriverRunner.url;
 
 /** Small current-detail navigation helper for lifecycle-specific admin tests. */
 public final class CurrentAdminApplicationRepairSteps {
-  @When("I open the current admin application {string} tab")
+  @When("I open the current application's {string} tab")
   public void openCurrentTab(String name) {
     if (url() == null || !url().contains("/corporate-actions/application-form/")) {
       throw new AssertionError("Current admin application tab step requires an application detail; url=" + url());

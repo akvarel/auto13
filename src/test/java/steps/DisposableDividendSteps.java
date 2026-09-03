@@ -312,9 +312,9 @@ public final class DisposableDividendSteps {
         return;
       }
 // Switch via the navbar dropdown → Switch Company modal (deep-linking
-      // /company-selection is accessdenied while authenticated).
-      if (!switchCompanyViaMenu(company)) {
-        throw new AssertionError("Reused customer session could not switch represented company to '"
+      // Direct access: open the SPA /company-selection route and pick the company card
+      if (!tryAuthenticatedCompanySelection(company)) {
+        throw new AssertionError("Direct company selection did not establish '"
           + company + "'; url=" + webdriver().driver().url());
       }
       persistSessionCookies();
@@ -331,7 +331,7 @@ public final class DisposableDividendSteps {
           requireDirectLithuanianCompany(company);
           return;
         }
-        if (switchCompanyViaMenu(company)) {
+        if (tryAuthenticatedCompanySelection(company)) {
           persistSessionCookies();
           return;
         }
@@ -346,8 +346,8 @@ public final class DisposableDividendSteps {
             requireDirectLithuanianCompany(company);
             return;
           }
-          if (!switchCompanyViaMenu(company)) {
-            throw new AssertionError("Switch-company flow did not establish '"
+          if (!tryAuthenticatedCompanySelection(company)) {
+            throw new AssertionError("Direct company selection did not establish '"
               + company + "'; url=" + webdriver().driver().url());
           }
         } else {
@@ -382,6 +382,54 @@ public final class DisposableDividendSteps {
    * pattern as the /company-selection page). Returns true when the requested
    * company became the active represented company.
    */
+  private boolean tryDirectCompanySelection(String company) {
+    System.out.println("DISPOSABLE_COMPANY_DIRECT_ATTEMPT requested=" + company
+      + " url=" + webdriver().driver().url());
+    String before = webdriver().driver().url();
+    try {
+      open("/company-selection");
+      sleep(800);
+      long deadline = System.currentTimeMillis() + 8000;
+      while (System.currentTimeMillis() < deadline) {
+        String url = webdriver().driver().url();
+        String body = $("body").getText();
+        if (url != null && url.contains("/company-selection") && !body.isEmpty() && !bodyShowsNotAuthorized()) {
+          System.out.println("DISPOSABLE_COMPANY_DIRECT_SELECT requested=" + company);
+          pickCompanyCardViaJs(company);
+          awaitRepresentedCompany(company, System.currentTimeMillis() + 6000);
+          return true;
+        }
+        if (bodyShowsNotAuthorized()) break;
+        sleep(200);
+      }
+      System.out.println("DISPOSABLE_COMPANY_DIRECT_SELECT_UNAVAILABLE requested=" + company
+        + " url=" + webdriver().driver().url());
+      open(before);
+      sleep(500);
+      return false;
+    } catch (Throwable failure) {
+      System.out.println("DISPOSABLE_COMPANY_DIRECT_SELECT_FAILED " + failure.getClass().getSimpleName());
+      if (before != null && !before.isBlank()) {
+        try {
+          open(before);
+          sleep(500);
+        } catch (Throwable ignored) { }
+      }
+      return false;
+    }
+  }
+
+  private boolean tryAuthenticatedCompanySelection(String company) {
+    if (switchCompanyViaMenu(company)) return true;
+    return tryDirectCompanySelection(company);
+  }
+
+  private void pickCompanyCardViaJs(String company) {
+    String wanted = normalize(company);
+    Object clicked = executeJavaScript(loadJs("ca-pick-company-card.js"), wanted);
+    System.out.println("DISPOSABLE_COMPANY_DIRECT_CARD_JS " + clicked);
+  }
+
   private boolean switchCompanyViaMenu(String company) {
     String wanted = normalize(company).toLowerCase(java.util.Locale.ROOT);
     try {
@@ -410,6 +458,31 @@ public final class DisposableDividendSteps {
         + "  items:items.map(function(i){return i.text;}).slice(0,12)});");
       if (pickResult == null || !pickResult.contains("\"clicked\"")) {
         System.out.println("DISPOSABLE_COMPANY_SWITCH_MENU " + pickResult);
+        return false;
+      }
+      // Direct-access preference (CA-21: the "Switch company" menu item may SPA-navigate
+      // to the /company-selection page (cards) instead of opening a modal.After Angular
+      // settles, prefer the validated BO-02 picker there; else fall back to the modal flow..
+      long uiDeadline = System.currentTimeMillis() + 4000;
+      boolean modalSeen = false;
+      while (System.currentTimeMillis() < uiDeadline) {
+        if (webdriver().driver().url().contains("/company-selection")
+            && $("body").getText().contains("Choose who you represent")) {
+          System.out.println("DISPOSABLE_COMPANY_DIRECT_PAGE url=" + webdriver().driver().url());
+          selectObservedCompanyToRepresent(company);
+          return true;
+        }
+        Object modalCheckAttr = executeJavaScript(
+          "const m=document.querySelector('ngb-modal-window,.modal.show,.modal');"
+            + "return m && m.getClientRects().length>0 ? 'yes' : 'no';");
+        if ("yes".equals(String.valueOf(modalCheckAttr))) {
+          modalSeen = true;
+          break;
+        }
+        sleep(200);
+      }
+      if (!modalSeen) {
+        System.out.println("DISPOSABLE_COMPANY_SWITCH_NEITHER_UI url=" + webdriver().driver().url());
         return false;
       }
       // Modal "Switch Company / Choose who you represent" appears — pick the card.
@@ -581,6 +654,18 @@ public final class DisposableDividendSteps {
       // menu control rather than bypassing it with a deep link.
       refresh();
       controls = awaitExactVisibleControls("Corporate Actions", 15000);
+    }
+    if (controls.isEmpty()) {
+      // Some represented-company switches settle on a sparse authenticated
+      // route that has the selected-company control but no application menu.
+      // Re-enter a stable customer shell, then still open Corporate Actions
+      // through the genuine navbar control required by this scenario.
+      SelenideElement represented = $("#navbarRepresentedDropdown");
+      if (represented.exists() && represented.isDisplayed()
+          && !normalize(represented.getText()).isBlank()) {
+        open("/holders-information");
+        controls = awaitExactVisibleControls("Corporate Actions", 15000);
+      }
     }
     if (controls.size() != 1) {
       throw new AssertionError("Expected one interactive Corporate Actions menu control before opening, found " + controls.size());
@@ -1155,10 +1240,18 @@ public final class DisposableDividendSteps {
 
 
       dumpCaListStructure("CA_LIST_AFTER_LOCATE");
-      // Open the exact application. The user clicks the row-end "Sign" BUTTON,
-      // which launches the Dokobit signing popup. Clicking the #signatures anchor
-      // only navigates to the detail tab (shows "Notify", never launches signing),
-      executeJavaScript(loadJs("ca-sign-row.js"), wanted);
+      // Open the exact application. A real user click on the row-end "Sign" BUTTON
+      // launches the Dokobit signing popup. A JS (synthetic) click can be treated
+      // as untrusted and browsers silently block its popup, so use Selenium's native
+      // (trusted) click on the exact-text "Sign" button instead..
+      List<SelenideElement> rowSign = exactVisible("Sign", "button");
+      if (!rowSign.isEmpty()) {
+        SelenideElement signBtn = rowSign.get(rowSign.size() - 1);
+        System.out.println("DISPOSABLE_SIGNING_NATIVE_ROW_SIGN " + signingControlDescription(signBtn));
+        signBtn.scrollIntoView("{block:'center',inline:'center'}").shouldBe(visible, enabled).click();
+      } else {
+        System.out.println("DISPOSABLE_SIGNING_NATIVE_ROW_SIGN_MISSING");
+      }
       sleep(1200);
       caSettle();
       signDocumentOrStay();
@@ -1205,7 +1298,7 @@ public final class DisposableDividendSteps {
 
 
 
-    dumpCaListStructure("SIGN_RETRY_VIEW");
+    dumpSigningSurface("SIGN_RETRY_VIEW");
     // The user-confirmed row-end "Sign" control appears on the CA list. Angular
     // re-renders constantly, so use JS visibility ((offsetParent!==null)) exactly
     // like the diagnostic dump; click the last one (prefer the anchor/router-link..
@@ -1236,6 +1329,24 @@ public final class DisposableDividendSteps {
         return;
       }
     } catch (Throwable ignored) { }
+    // The detail's Signatures tab may not render until re-opened;; Angular
+    // reloaded the whole application detail right after the initiate click..
+    try {
+      List<SelenideElement> signaturesTab = exactVisible("Signatures", "button,a,[role=tab],li,span");
+      if (!signaturesTab.isEmpty()) {
+        System.out.println("DISPOSABLE_SIGNING_RETAB_CLICK");
+        signaturesTab.get(signaturesTab.size() - 1).scrollIntoView("{block:'center',inline:'center'}").click();
+        sleep(1500);
+        caSettle();
+      }
+    } catch (Throwable ignored2) { }
+    try {
+      SelenideElement credential2 = visibleSigningCredentialField();
+      if (credential2 != null) {
+        System.out.println("DISPOSABLE_SIGNING_RECOVERED_URL2 " + webdriver().driver().url());
+        return;
+      }
+    } catch (Throwable ignored3) { }
     // Give one settle beat; the parent loop re-detects stuck state if needed..
     sleep(1000);
   }
@@ -1247,7 +1358,10 @@ public final class DisposableDividendSteps {
     long nextReclickAt = startedAt + 4000;
     long nextReopenAt = startedAt + 15000;
     boolean seenInitiateControl = false;
+    int retabAttempts = 0;
+    boolean refreshedAfterInitiate = false;
     while (System.currentTimeMillis() < deadline) {
+
 
       String body = $("body").shouldBe(visible).getText();
       if (visibleSignControlInAnyFrame()) return;
@@ -1258,7 +1372,6 @@ public final class DisposableDividendSteps {
         sleep(500);
         continue;
       }
-
       boolean stuckStaleState =
           (body != null && body.contains("Notify"))
           && !body.contains("Initiate signing process")
@@ -1476,6 +1589,25 @@ public final class DisposableDividendSteps {
         }
         Selenide.switchTo().defaultContent();
       }
+      try {
+        if (WebDriverRunner.getWebDriver().getWindowHandles().size() > 1) {
+          for (String handle : WebDriverRunner.getWebDriver().getWindowHandles()) {
+
+
+
+            if (!handle.equals(WebDriverRunner.getWebDriver().getWindowHandle())) {
+              WebDriverRunner.getWebDriver().switchTo().window(handle);
+              if (tryVisibleSigningCredentialField() != null) {
+
+                System.out.println("DISPOSABLE_SIGNING_POPUP_CREDENTIAL_FOUND handle=" + handle);
+                return;
+              }
+              WebDriverRunner.getWebDriver().switchTo().window(
+                WebDriverRunner.getWebDriver().getWindowHandles().iterator().next());
+            }
+          }
+        }
+      } catch (Throwable ignoredWin) { }
       sleep(300);
     }
     throw new AssertionError("No phone number or Smart-ID signing field in main DOM or iframes");

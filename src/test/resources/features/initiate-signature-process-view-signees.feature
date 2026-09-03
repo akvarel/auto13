@@ -5,6 +5,6 @@ Feature: "Initiate signature process, view signees"
 
   @req:CA-25
   Scenario: [admin] "Initiate signature process, view signees"
-    Given a fresh submitted disposable customer Bonus Issue application is opened in the admin application
-    When I open the current admin application "Signatures" tab
-    Then the admin signees list is visible
+    Given a signed disposable customer Bonus Issue application is opened in the admin application
+    When I open the current application's "Signatures" tab
+    Then the signees list is visible

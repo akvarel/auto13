@@ -18,7 +18,7 @@ public final class AdminSigneesRepairSteps {
   private static final String EXPECTED_SIGNER = "MARY ÄNN O’CONNEŽ-ŠUSLIK TESTNUMBER";
   private static final Pattern SIGNING_DATE = Pattern.compile("\\b\\d{2}/\\d{2}/\\d{4}\\b");
 
-  @Then("the admin signees list is visible")
+  @Then("the signees list is visible")
   public void adminSigneesListVisible() {
     long deadline = System.currentTimeMillis() + Configuration.timeout;
     while (System.currentTimeMillis() < deadline) {

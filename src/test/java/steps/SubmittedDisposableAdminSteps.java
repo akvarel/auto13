@@ -44,7 +44,7 @@ public final class SubmittedDisposableAdminSteps {
     this.admin = admin;
   }
 
-  @Given("a fresh submitted disposable customer Bonus Issue application is opened in the admin application")
+  @Given("a signed disposable customer Bonus Issue application is opened in the admin application")
   public void freshSubmittedCustomerApplicationOpenedInAdmin() throws Exception {
     customer.freshSavedDisposableApplication(TYPE);
     applicationId = applicationIdFromUrl(url());
